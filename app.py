@@ -156,11 +156,14 @@ if uploaded_files and st.button("🔍  Ler QR Codes agora"):
                     except Exception:
                         conteudo = obj.data.decode("latin-1", errors="replace")
 
+                    # Equivalente à fórmula =ESQUERDA(DIREITA(C;6);4)
+                    codigo = conteudo[-6:-2] if len(conteudo) >= 6 else conteudo
+
                     dados_finais.append({
                         "Arquivo": arquivo.name,
                         "Página": i + 1,
                         "Conteúdo QR Code": conteudo,
-                        "Tipo": obj.type,
+                        "Código": codigo,
                     })
                     qr_encontrados_neste_pdf += 1
 
