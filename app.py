@@ -1,6 +1,8 @@
+import gc
+
 import streamlit as st
 import pandas as pd
-from pdf2image import convert_from_bytes
+from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 from pyzbar.pyzbar import decode
 from io import BytesIO
 import datetime
@@ -127,6 +129,14 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.markdown(f'<p class="upload-hint">📄 {len(uploaded_files)} arquivo(s) selecionado(s)</p>', unsafe_allow_html=True)
 
+qualidade = st.selectbox(
+    "Qualidade de leitura",
+    options=["Padrão (recomendado para volumes grandes)", "Alta (PDFs com poucas páginas)"],
+    index=0,
+    help="Volumes grandes de QR codes (milhares de páginas) exigem menos memória em qualidade Padrão.",
+)
+dpi = 200 if qualidade.startswith("Padrão") else 300
+
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Processamento ─────────────────────────────────────────────────────────────
@@ -141,37 +151,54 @@ if uploaded_files and st.button("🔍  Ler QR Codes agora"):
     for idx, arquivo in enumerate(uploaded_files):
         pct = int((idx / len(uploaded_files)) * 100)
         progress_bar.progress(pct, text=f"Processando {idx+1}/{len(uploaded_files)}: {arquivo.name}")
-        status_text.caption(f"Convertendo páginas...")
+        status_text.caption("Lendo arquivo...")
 
         try:
             pdf_bytes = arquivo.read()
-            paginas = convert_from_bytes(pdf_bytes, dpi=300)
+            total_paginas = pdfinfo_from_bytes(pdf_bytes)["Pages"]
 
             qr_encontrados_neste_pdf = 0
-            for i, pagina in enumerate(paginas):
-                codigos = decode(pagina)
-                for obj in codigos:
-                    try:
-                        conteudo = obj.data.decode("utf-8")
-                    except Exception:
-                        conteudo = obj.data.decode("latin-1", errors="replace")
+            for i in range(1, total_paginas + 1):
+                status_text.caption(
+                    f"Arquivo {idx+1}/{len(uploaded_files)}: {arquivo.name} — página {i}/{total_paginas}"
+                )
 
-                    # Equivalente à fórmula =ESQUERDA(DIREITA(C;6);4)
-                    codigo = conteudo[-6:-2] if len(conteudo) >= 6 else conteudo
+                # Converte só a página atual: evita carregar milhares de páginas
+                # na memória de uma vez (causa do crash com PDFs muito grandes).
+                try:
+                    pagina = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=i, last_page=i)[0]
+                    codigos = decode(pagina)
+                    for obj in codigos:
+                        try:
+                            conteudo = obj.data.decode("utf-8")
+                        except Exception:
+                            conteudo = obj.data.decode("latin-1", errors="replace")
 
-                    dados_finais.append({
-                        "Arquivo": arquivo.name,
-                        "Página": i + 1,
-                        "Conteúdo QR Code": conteudo,
-                        "Código": codigo,
-                    })
-                    qr_encontrados_neste_pdf += 1
+                        # Equivalente à fórmula =ESQUERDA(DIREITA(C;6);4)
+                        codigo = conteudo[-6:-2] if len(conteudo) >= 6 else conteudo
+
+                        dados_finais.append({
+                            "Arquivo": arquivo.name,
+                            "Página": i,
+                            "Conteúdo QR Code": conteudo,
+                            "Código": codigo,
+                        })
+                        qr_encontrados_neste_pdf += 1
+                except Exception as e:
+                    erros.append(f"⚠️ Erro na página {i} de **{arquivo.name}**: {e}")
+                finally:
+                    pagina = None
+                    if i % 25 == 0:
+                        gc.collect()
 
             if qr_encontrados_neste_pdf == 0:
                 erros.append(f"⚠️ Nenhum QR code detectado em: **{arquivo.name}**")
 
         except Exception as e:
             erros.append(f"❌ Erro ao processar **{arquivo.name}**: {e}")
+        finally:
+            pdf_bytes = None
+            gc.collect()
 
     progress_bar.progress(100, text="Concluído!")
     status_text.empty()
